@@ -38,8 +38,9 @@ The filtered repertoire data and the data used for training the TCR bag feature 
   This script compares different CMV classification methods.
 
 - **4.vgene_embedding_downstream_analysis.py**  
-  This script performs downstream analyses on V gene embeddings.
+  This script performs downstream analyses on V gene embeddings, including the umap visualization of V gene embedding and constructing a phylogenetic tree.
 
 ## Additional Notes
 For any issues or questions, please feel free to open an issue in this repository.
-```
+Email: miaozhhuo2-c@my.cityu.edu.hk
+
