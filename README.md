@@ -1,5 +1,5 @@
 # ClareV
-Mapping the Functional Landscape of V Genes in TCR Repertoires via Representation Learning
+A Contrastive Learning Framework for Context-Aware V Gene Representations in TCR Repertoires.
 
 ## Project Introduction
 This repository contains the package and experimental code associated with the publication. 
