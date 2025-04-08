@@ -45,14 +45,6 @@ def train_cl():
     train_bags, test_bags, train_weights, test_weights = train_test_split(superbags, weights, test_size=0.1, random_state=data_random_seed)
     train_bags, eval_bags, train_weights, eval_weights = train_test_split(train_bags, train_weights, test_size=0.11, random_state=data_random_seed)
 
-    print(f"train dataset size: {len(train_bags)}")
-    print(f"eval dataset size: {len(eval_bags)}")
-    print(f"test dataset size: {len(test_bags)}")
-    print(f"train weights size: {len(train_weights)}")
-    print(f"eval weights size: {len(eval_weights)}")
-    print(f"test weights size: {len(test_weights)}")
-
-
     # Define dataloaders for train and test sets
     train_dataset = ClusterBagDataset(train_bags, weight = train_weights, subbag_size = subbag_size, data_repeat = 3)
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
