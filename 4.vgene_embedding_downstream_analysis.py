@@ -38,13 +38,11 @@ def main():
     ## input data dirs
     bag_data_dir = './data/processed_data/Emerson2017_vgene/'
     trained_model_dir = './trained_models/Emerson2017_vgene_weight/'
-    num_epochs = 30
     batch_size = 16
-    test_batch_size = 1
     vgene_emb_dim = 120
     tcr_emb_dim = 120
     subbag_size = 50
-    cutoff_smp = False # False ##  10 ## 10
+    cutoff_smp = 100 # False or int number, for drawing umap plot
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     result_dir = './results/figs/vgene_analysis'
     os.makedirs(result_dir, exist_ok=True)
@@ -83,6 +81,39 @@ def main():
     # print(f"vembeddings shape: {vembeddings.shape}") ## vembeddings shape: (760, 21, 120)
 
 
+    ##  ========= build a phylogenetic tree via clarev learned V embeding==========
+    vgene2vfam = map_vgene_to_vfam(v_gene_order)
+    v_fam_order = [vgene2vfam[vgene] for vgene in v_gene_order]
+    v_fam_order = sorted(list(set(v_fam_order))) ## uniq
+    fam2vgene = {}
+    for vgene, vfam in vgene2vfam.items():
+        fam2vgene.setdefault(vfam, set()).add(vgene)
+
+    colors = dict(zip(v_fam_order, sns.color_palette("hsv", len(v_fam_order))))
+
+    emb_v_labels = np.tile(v_gene_order, len(smp_list))
+
+    row_colors = [colors[vgene2vfam[vgene]] for vgene in v_gene_order]
+    vembeddings = vembeddings.reshape(len(smp_list), num_vgene, vgene_emb_dim)
+    vembeddings = np.mean(vembeddings, axis=0) ## mean at sample level
+    # print(f"mean vembeddings shape: {vembeddings.shape}") ## (36, 120)
+
+    plt.figure(figsize=(14, 10))
+    ## label by V gene
+    g = sns.clustermap(vembeddings, cmap='YlGn', metric='cosine', row_cluster=True, col_cluster=False, row_colors=row_colors)
+    v_gene_order = np.array(v_gene_order)
+    row_order = v_gene_order[g.dendrogram_row.reordered_ind]
+    g.ax_heatmap.set_yticklabels(row_order)
+    plt.setp(g.ax_heatmap.get_xticklabels(), rotation=90)
+    plt.setp(g.ax_heatmap.get_yticklabels(), rotation=0)
+    plt.savefig(os.path.join(result_dir, 'v_gene_embeddings_similarity.png'), bbox_inches='tight',dpi=600)
+
+
+
+    ##  ======== UMAP visualization ==========
+
+    vembeddings, labels, _ = loader_to_vfeature(whole_dataloader, best_model)
+
     if cutoff_smp:
         np.random.seed(0)
         idx = np.random.permutation(len(smp_list))
@@ -99,13 +130,11 @@ def main():
 
     vembeddings = vembeddings.reshape(-1, 120)
 
-
     emb_v_labels = np.tile(v_gene_order, len(smp_list))
     emb_smp_labels = np.repeat(smp_list, len(v_gene_order))
     emb_cmv_labels = np.repeat(smp_labels, len(v_gene_order))
 
 
-    ##  ======== UMAP visualization ==========
     print(f"emb_v_labels shape: {emb_v_labels.shape}")
     print(f"vembeddings shape: {vembeddings.shape}")
     umap = UMAP(n_components=2, n_neighbors=100, min_dist=0.2, metric= 'cosine')
@@ -143,37 +172,6 @@ def main():
     )
     plt.tight_layout()
     plt.savefig(os.path.join(result_dir, 'v_gene_embeddings_cmv.png'), dpi=600)
-
-
-
-    ##  ========= the clarev learned V embeding with family==========
-    vgene2vfam = map_vgene_to_vfam(v_gene_order)
-    v_fam_order = [vgene2vfam[vgene] for vgene in v_gene_order]
-    v_fam_order = sorted(list(set(v_fam_order))) ## uniq
-    fam2vgene = {}
-    for vgene, vfam in vgene2vfam.items():
-        fam2vgene.setdefault(vfam, set()).add(vgene)
-    multi_family = {fam: (len(vgenes) > 1) for fam, vgenes in fam2vgene.items()}
-
-    colors = dict(zip(v_fam_order, sns.color_palette("hsv", len(v_fam_order))))
-
-    emb_vfam_labels = np.array([vgene2vfam[vgene] for vgene in emb_v_labels])
-
-    row_colors = [colors[vgene2vfam[vgene]] for vgene in v_gene_order]
-    vembeddings = vembeddings.reshape(len(smp_list), num_vgene, vgene_emb_dim)
-    vembeddings = np.mean(vembeddings, axis=0) ## mean at sample level
-    # print(f"mean vembeddings shape: {vembeddings.shape}") ## (36, 120)
-
-    plt.figure(figsize=(14, 10))
-    ## label by V gene
-    g = sns.clustermap(vembeddings, cmap='YlGn', metric='cosine', row_cluster=True, col_cluster=False, row_colors=row_colors)
-    v_gene_order = np.array(v_gene_order)
-    row_order = v_gene_order[g.dendrogram_row.reordered_ind]
-    g.ax_heatmap.set_yticklabels(row_order)
-    plt.setp(g.ax_heatmap.get_xticklabels(), rotation=90)
-    plt.setp(g.ax_heatmap.get_yticklabels(), rotation=0)
-    plt.savefig(os.path.join(result_dir, 'v_gene_embeddings_similarity.png'), bbox_inches='tight',dpi=600)
-
 
 
 main()

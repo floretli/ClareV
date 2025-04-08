@@ -1,6 +1,5 @@
 biopython==1.79
 GitPython==3.1.13
-glove-python==0.1.0
 google-auth==1.18.0
 google-auth-oauthlib==0.4.1
 google-pasta==0.2.0
@@ -18,3 +17,6 @@ tcr2vec==1.0.1
 torch==1.9.0
 tqdm==4.48.0
 wandb==0.10.19
+umap-learn==0.5.3
+gdown==5.2.0
+seaborn==0.12.1
