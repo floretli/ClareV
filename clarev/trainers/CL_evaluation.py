@@ -1,5 +1,7 @@
 import torch.nn as nn
 import torch
+import copy
+from typing import Optional
 from torch.utils.data import TensorDataset, DataLoader
 from sklearn.metrics import roc_auc_score, accuracy_score, f1_score
 import numpy as np
@@ -86,7 +88,86 @@ def create_classfication_data(embeddings, labels, split_ratio = 0.8, batch_size 
 
     return train_c_dataloader, test_c_dataloader
 
-def vfeature_classification(train_loader, test_loader, encoder, device, emb_dim = 120, num_vgene = 21, num_epochs = 20, class_num = 2, use_vfreq=False):
+def _evaluate_loader(
+    classifier,
+    loader,
+    encoder,
+    criterion,
+    device,
+    use_vfreq,
+    num_vgene,
+    emb_dim,
+):
+    classifier.eval()
+    preds = []
+    pred_probs = []
+    labels = []
+    total_loss = 0.0
+
+    with torch.no_grad():
+        for batch_ebd, batch_labels, batch_vfreq in loader:
+            batch_ebd = batch_ebd.to(device)
+            batch_labels = batch_labels.to(device)
+            batch_vfreq = batch_vfreq.to(device)
+
+            if encoder:
+                batch_ebd = tensor_to_vfeature(batch_ebd, encoder)
+            else:
+                assert batch_ebd.size(1) == num_vgene, "batch_ebd size is not equal to num_vgene"
+                assert batch_ebd.size(2) == emb_dim,  "batch_ebd size is not equal to emb_dim"
+
+            if use_vfreq:
+                outputs = classifier(batch_ebd, batch_vfreq)
+            else:
+                outputs = classifier(batch_ebd)
+
+            loss = criterion(outputs, batch_labels)
+            probs = torch.softmax(outputs, dim=1)
+            predicted = torch.argmax(probs, dim=1)
+
+            total_loss += loss.item() * len(batch_labels)
+            preds.append(predicted.cpu().numpy())
+            pred_probs.append(probs[:, 1].cpu().numpy())
+            labels.append(batch_labels.cpu().numpy())
+
+    total_loss /= len(loader.dataset)
+    preds = np.concatenate(preds)
+    pred_probs = np.concatenate(pred_probs)
+    labels = np.concatenate(labels)
+
+    try:
+        auc = roc_auc_score(labels, pred_probs)
+    except ValueError:
+        auc = np.nan
+
+    acc = accuracy_score(labels, preds)
+    f1 = f1_score(labels, preds)
+    return {
+        "loss": total_loss,
+        "auc": auc,
+        "acc": acc,
+        "f1": f1,
+        "labels": labels,
+        "preds": preds,
+        "pred_probs": pred_probs,
+    }
+
+
+def vfeature_classification(
+    train_loader,
+    test_loader,
+    encoder,
+    device,
+    emb_dim=120,
+    num_vgene=21,
+    num_epochs=20,
+    class_num=2,
+    use_vfreq=False,
+    return_details=False,
+    val_loader=None,
+    nested_mode=False,
+    early_stopping_patience: Optional[int] = None,
+):
     ## use embedding to classfy
     if use_vfreq:
         classifier = DualPathClassifier( v_num = num_vgene, emb_dim =emb_dim, class_num = class_num).to(device)
@@ -115,10 +196,21 @@ def vfeature_classification(train_loader, test_loader, encoder, device, emb_dim 
         'epoch': 0,
         'loss': np.inf
     }
+    if nested_mode and val_loader is None:
+        raise ValueError("val_loader is required when nested_mode=True")
+
+    best_details = None
+    best_state_dict = None
+    best_test_metrics_by_val = None
+    last_epoch_test_metrics = None
+    no_improve_epochs = 0
+    epoch_logs = []
 
     for epoch in range(num_epochs):
         train_loss = 0.0
         train_correct = 0
+        train_pred_probs = []
+        train_labels_all = []
         classifier.train()
 
         for batch_ebd, batch_labels, batch_vfreq in train_loader:
@@ -145,66 +237,248 @@ def vfeature_classification(train_loader, test_loader, encoder, device, emb_dim 
             optimizer.step()
 
             _, predicted = torch.max(outputs.data, 1)
+            train_probs = torch.softmax(outputs, dim=1)[:, 1]
             correct = (predicted == batch_labels).sum().item()
             train_correct += correct
             train_loss += loss.item() * len(batch_labels)
+            train_pred_probs.append(train_probs.detach().cpu().numpy())
+            train_labels_all.append(batch_labels.detach().cpu().numpy())
         ## length of train_loader.dataset
         train_loss /= len(train_loader.dataset)
         train_accuracy = train_correct / len(train_loader.dataset)
+        train_labels_all = np.concatenate(train_labels_all)
+        train_pred_probs = np.concatenate(train_pred_probs)
+        try:
+            train_auc = roc_auc_score(train_labels_all, train_pred_probs)
+        except ValueError:
+            train_auc = np.nan
 
-        ## validation
-        classifier.eval()
-        preds = []
-        labels = []
-        test_loss = 0.0
-        with torch.no_grad():
-            for batch_ebd, batch_labels, batch_vfreq in test_loader:
-                batch_ebd = batch_ebd.to(device)
-                batch_labels = batch_labels.to(device)
-                batch_vfreq = batch_vfreq.to(device)
+        eval_loader = val_loader if nested_mode else test_loader
+        eval_metrics = _evaluate_loader(
+            classifier=classifier,
+            loader=eval_loader,
+            encoder=encoder,
+            criterion=criterion,
+            device=device,
+            use_vfreq=use_vfreq,
+            num_vgene=num_vgene,
+            emb_dim=emb_dim,
+        )
+        eval_auc = eval_metrics["auc"]
+        if np.isnan(eval_auc):
+            improved = False
+        else:
+            improved = eval_auc > best_metrics["auc"]
 
-                if encoder:
-                    batch_ebd = tensor_to_vfeature(batch_ebd, encoder)
-                else:
-                    assert batch_ebd.size(1) == num_vgene, "batch_ebd size is not equal to num_vgene"
-                    assert batch_ebd.size(2) == emb_dim,  "batch_ebd size is not equal to emb_dim"
-                    batch_ebd = batch_ebd
+        if improved:
+            best_metrics["epoch"] = epoch + 1
+            best_metrics["auc"] = eval_metrics["auc"]
+            best_metrics["acc"] = eval_metrics["acc"]
+            best_metrics["f1"] = eval_metrics["f1"]
+            best_metrics["loss"] = eval_metrics["loss"]
+            best_state_dict = copy.deepcopy(classifier.state_dict())
+            no_improve_epochs = 0
+            if return_details and not nested_mode:
+                best_details = {
+                    "labels": eval_metrics["labels"].copy(),
+                    "preds": eval_metrics["preds"].copy(),
+                    "pred_probs": eval_metrics["pred_probs"].copy(),
+                }
+        else:
+            no_improve_epochs += 1
 
-                if use_vfreq:
-                    outputs = classifier(batch_ebd, batch_vfreq)
-                else:
-                    outputs = classifier(batch_ebd)
+        if nested_mode:
+            test_metrics_epoch = _evaluate_loader(
+                classifier=classifier,
+                loader=test_loader,
+                encoder=encoder,
+                criterion=criterion,
+                device=device,
+                use_vfreq=use_vfreq,
+                num_vgene=num_vgene,
+                emb_dim=emb_dim,
+            )
+            last_epoch_test_metrics = test_metrics_epoch
+            if improved:
+                best_test_metrics_by_val = {
+                    "loss": test_metrics_epoch["loss"],
+                    "auc": test_metrics_epoch["auc"],
+                    "acc": test_metrics_epoch["acc"],
+                    "f1": test_metrics_epoch["f1"],
+                }
+            print(
+                (
+                    "Epoch [{}/{}] Train Loss: {:.4f}, Train ACC: {:.4f}, Train AUC: {:.4f} | "
+                    "Val Loss: {:.4f}, Val AUC: {:.4f}, Val ACC: {:.4f} | "
+                    "Test Loss: {:.4f}, Test AUC: {:.4f}, Test ACC: {:.4f} | "
+                    "Best Val AUC: {:.4f} (epoch {})"
+                ).format(
+                    epoch + 1,
+                    num_epochs,
+                    train_loss,
+                    train_accuracy,
+                    train_auc,
+                    eval_metrics["loss"],
+                    eval_metrics["auc"],
+                    eval_metrics["acc"],
+                    test_metrics_epoch["loss"],
+                    test_metrics_epoch["auc"],
+                    test_metrics_epoch["acc"],
+                    best_metrics["auc"],
+                    best_metrics["epoch"],
+                ),
+                flush=True,
+            )
+            epoch_logs.append(
+                {
+                    "epoch": epoch + 1,
+                    "train_loss": train_loss,
+                    "train_acc": train_accuracy,
+                    "train_auc": train_auc,
+                    "val_loss": eval_metrics["loss"],
+                    "val_auc": eval_metrics["auc"],
+                    "val_acc": eval_metrics["acc"],
+                    "test_loss": test_metrics_epoch["loss"],
+                    "test_auc": test_metrics_epoch["auc"],
+                    "test_acc": test_metrics_epoch["acc"],
+                    "best_val_auc": best_metrics["auc"],
+                    "best_val_epoch": best_metrics["epoch"],
+                }
+            )
+        else:
+            print(
+                (
+                    "Epoch [{}/{}] Train Loss: {:.4f}, Train ACC: {:.4f}, Train AUC: {:.4f} | "
+                    "Val Loss: {:.4f}, Val AUC: {:.4f}, Val ACC: {:.4f} | "
+                    "Best Val AUC: {:.4f} (epoch {})"
+                ).format(
+                    epoch + 1,
+                    num_epochs,
+                    train_loss,
+                    train_accuracy,
+                    train_auc,
+                    eval_metrics["loss"],
+                    eval_metrics["auc"],
+                    eval_metrics["acc"],
+                    best_metrics["auc"],
+                    best_metrics["epoch"],
+                ),
+                flush=True,
+            )
+            epoch_logs.append(
+                {
+                    "epoch": epoch + 1,
+                    "train_loss": train_loss,
+                    "train_acc": train_accuracy,
+                    "train_auc": train_auc,
+                    "val_loss": eval_metrics["loss"],
+                    "val_auc": eval_metrics["auc"],
+                    "val_acc": eval_metrics["acc"],
+                    "test_loss": np.nan,
+                    "test_auc": np.nan,
+                    "test_acc": np.nan,
+                    "best_val_auc": best_metrics["auc"],
+                    "best_val_epoch": best_metrics["epoch"],
+                }
+            )
 
-                loss = criterion(outputs, batch_labels)
-                _, predicted = torch.max(outputs.data, 1)
+        if (
+            early_stopping_patience is not None
+            and early_stopping_patience > 0
+            and no_improve_epochs >= early_stopping_patience
+        ):
+            print(
+                (
+                    "Early stop triggered at epoch {} | "
+                    "No Val AUC improvement for {} epochs"
+                ).format(epoch + 1, early_stopping_patience),
+                flush=True,
+            )
+            break
 
-                test_loss += loss.item() * len(batch_labels)
-
-                preds.append(predicted.cpu().numpy())
-                labels.append(batch_labels.cpu().numpy())
-
-            test_loss /= len(test_loader.dataset)
-            preds = np.concatenate(preds)
-            labels = np.concatenate(labels)
-            test_auc = roc_auc_score(labels, preds)
-            test_accuracy = accuracy_score(labels, preds)
-            test_f1 = f1_score(labels, preds)
-
-            # if test_loss < best_metrics['loss']:
-            if test_auc > best_metrics['auc']:
-                best_metrics['loss'] = test_loss
-                best_metrics['acc'] = test_accuracy
-                best_metrics['auc'] = test_auc
-                best_metrics['f1'] = test_f1
-                best_metrics['epoch'] = epoch + 1
-
+    if nested_mode:
+        if best_state_dict is not None:
+            classifier.load_state_dict(best_state_dict)
+        test_metrics = _evaluate_loader(
+            classifier=classifier,
+            loader=test_loader,
+            encoder=encoder,
+            criterion=criterion,
+            device=device,
+            use_vfreq=use_vfreq,
+            num_vgene=num_vgene,
+            emb_dim=emb_dim,
+        )
+        best_metrics["loss"] = test_metrics["loss"]
+        best_metrics["auc"] = test_metrics["auc"]
+        best_metrics["acc"] = test_metrics["acc"]
+        best_metrics["f1"] = test_metrics["f1"]
         print(
-            'Epoch [{}/{}], Train Loss: {:.4f}, Train Accuracy: {:.4f}, Test Loss: {:.4f}'.format(
-                epoch + 1, num_epochs, train_loss, train_accuracy, test_loss))
+            (
+                "Final Test Loss: {:.4f}, Test AUC: {:.4f}, Test ACC: {:.4f}, Test F1: {:.4f} | "
+                "Selected by Best Val AUC epoch {}"
+            ).format(
+                test_metrics["loss"],
+                test_metrics["auc"],
+                test_metrics["acc"],
+                test_metrics["f1"],
+                best_metrics["epoch"],
+            ),
+            flush=True,
+        )
+        if best_test_metrics_by_val is not None:
+            print(
+                (
+                    "Test at selected epoch {} -> Loss: {:.4f}, AUC: {:.4f}, ACC: {:.4f}, F1: {:.4f}"
+                ).format(
+                    best_metrics["epoch"],
+                    best_test_metrics_by_val["loss"],
+                    best_test_metrics_by_val["auc"],
+                    best_test_metrics_by_val["acc"],
+                    best_test_metrics_by_val["f1"],
+                ),
+                flush=True,
+            )
+        if last_epoch_test_metrics is not None:
+            print(
+                (
+                    "Test at last epoch {} -> Loss: {:.4f}, AUC: {:.4f}, ACC: {:.4f}, F1: {:.4f}"
+                ).format(
+                    num_epochs,
+                    last_epoch_test_metrics["loss"],
+                    last_epoch_test_metrics["auc"],
+                    last_epoch_test_metrics["acc"],
+                    last_epoch_test_metrics["f1"],
+                ),
+                flush=True,
+            )
+        if return_details:
+            best_details = {
+                "labels": test_metrics["labels"].copy(),
+                "preds": test_metrics["preds"].copy(),
+                "pred_probs": test_metrics["pred_probs"].copy(),
+            }
 
-        # print(
-        #     'Epoch [{}/{}], Train Loss: {:.4f}, Test Loss: {:.4f}'.format(
-        #         epoch + 1, num_epochs, train_loss, test_loss))
+    best_metrics["epoch_logs"] = epoch_logs
+    if return_details:
+        if best_details is None and not nested_mode:
+            final_eval = _evaluate_loader(
+                classifier=classifier,
+                loader=test_loader,
+                encoder=encoder,
+                criterion=criterion,
+                device=device,
+                use_vfreq=use_vfreq,
+                num_vgene=num_vgene,
+                emb_dim=emb_dim,
+            )
+            best_details = {
+                "labels": final_eval["labels"].copy(),
+                "preds": final_eval["preds"].copy(),
+                "pred_probs": final_eval["pred_probs"].copy(),
+            }
+        best_details["epoch_logs"] = epoch_logs
+        return best_metrics, best_details
     return best_metrics
 
 def loader_to_vfeature(dataloader, model):  ## data_tensor: tensor with size=(N, ebd_dim), model: ContrastiveModel

@@ -5,24 +5,34 @@ A Contrastive Learning Framework for Context-Aware V Gene Representations in TCR
 This repository contains the package and experimental code associated with the publication. 
 
 ## Installation
-Follow these steps to get started:
 
-1. **Clone the Repository:**
+Use the repository root (`ClareV/`) as your working directory.
+
+1. **Clone and enter repository**
    ```bash
    git clone https://github.com/floretli/ClareV.git
    cd ClareV
    ```
 
-2. **Create the Conda Environment:**
+2. **Create environment**
    ```bash
    conda create -n clarev_env python=3.8
    conda activate clarev_env
    ```
 
-3. **Install Dependencies:**
+3. **Install PyTorch (choose command for your CUDA/CPU)**
+   - Follow the official selector: [PyTorch installation guide](https://pytorch.org/get-started/locally/).
+
+4. **Install remaining dependencies**
    ```bash
-   pip install -r requirements.txt
+   pip install -r requirements-no-torch.txt
+   pip install -e .
    ```
+
+Notes:
+- `gdown` is required (used to download pretrained encoder files).
+- `tensorflow` is optional and only needed for legacy paths in `clarev/encoders/tcr2vec/`.
+- `scikit-learn-intelex` is optional (performance acceleration only).
 
 ## Dataset
 The filtered repertoire data and the data used for training the TCR bag feature extractor can be downloaded from [Zenodo](https://zenodo.org/records/15173766). After downloading, unzip the files and place them into the `./data/` directory.
@@ -43,14 +53,14 @@ CASSSSQGRDSPLHF	0.0248436674828364	16559	CTGTCGGCTGCTCCCTCCCAGACATCTGTGTACTTCTGT
 CASSQRGQGYYGYTF	0.0070694704498535	4712	AACGCCTTGGAGCTGGACGACTCGGCCCTGTATCTCTGTGCCAGCAGCCAGCGCGGACAGGGCTACTATGGCTACACCTTCGGTTCG	TCRBV05	TCRBV05-04*01	TCRBD01	TCRBD01-01	TCRBJ01	TCRBJ01-02*01	45	ETGVTQSPTHLIKTRGQQVTLRCSSQSGHNTVSWYQQALGQGPQFIFQYYREEENGRGNFPPRFSGLQFPNYSSELNVNALELDDSALYLCASSQRGQGYYGYTF
 CASSRTGDSYEQYF	0.0057611983292524	3840	...
 ```
-- Each sample file must include a "frequencyCount (%)" or a "count (templates/reads)	nucleotide" column to ensure correct parsing and processing during TCR bag construction and subsequent analyses.
+- Each sample file must include either `frequencyCount (%)` or `count (templates/reads)` for abundance parsing.
 - The full_seq column should contain the concatenated sequence of the original CDR3 and its corresponding VJ gene sequence.
 - Our ClareV framework utilizes the [TCR2vec tool](https://github.com/jiangdada1221/TCR2vec) to encode TCR sequences based on the full_seq column.
 
 ## TCR Encoder
 ClareV leverages TCR clonotype-level embedding through deep learning to learn V gene-level representations. The built-in method for TCR embedding is the TCR2vec tool, which uses the full-length encoding mode by default. This model is based on a transformer-based pre-trained model of TCR sequences.
 
-During the first run, ClareV will automatically download the pre-trained model from [Google Drive](https://drive.google.com/file/d/1SML_YjiK6WwIgXD-4jIRcy1vWE-46PUp/view?usp=sharing) and save it to the `./pretrained_models` directory. If the download fails or if you prefer to use a different encoding mode (e.g., CDR3 encoding), please manually download the appropriate model from the [TCR2vec project]((https://github.com/jiangdada1221/TCR2vec)) and update the `path_to_TCR2vec` variable in the script 1.divide_tcr_bags_accroding_imgt.py to point to the correct directory.
+During the first run, ClareV will automatically download the pre-trained model from [Google Drive](https://drive.google.com/file/d/1SML_YjiK6WwIgXD-4jIRcy1vWE-46PUp/view?usp=sharing) and save it to the `./pretrained_models` directory. If the download fails or if you prefer to use a different encoding mode (e.g., CDR3 encoding), please manually download the appropriate model from the [TCR2vec project](https://github.com/jiangdada1221/TCR2vec) and update the `path_to_TCR2vec` variable in `1.divide_tcr_bags_accroding_imgt.py` to point to the correct directory.
 
 ## Script Descriptions
 - **1.divide_tcr_bags_accroding_imgt.py**  
@@ -59,11 +69,50 @@ During the first run, ClareV will automatically download the pre-trained model f
 - **2.train_bag_feature_extractor.py**  
   This script trains the TCR bag feature extractor using the processed training data.
 
-- **3.cmv_classification_method_comparison.py**  
-  This script compares different CMV classification methods.
+- **3.0.cmv_clarev_classification.py**  
+  This script runs ClareV CMV classification methods with a shared split file.
+
+- **3.1.cmv_baseline_classification.py**  
+  This script runs baseline CMV classifiers with the same shared split file used by 3.0.
 
 - **4.vgene_embedding_downstream_analysis.py**  
   This script performs downstream analyses on V gene embeddings, including the umap visualization of V gene embedding and constructing a phylogenetic tree.
+
+## Reproducible Commands (Final Default Protocol)
+
+Protocol summary:
+- shared split file with `train/val/test` indices
+- nested training (inner 80/20, `inner_n_splits=5`)
+- early stopping patience `5`
+- report metrics on outer hold-out test folds
+
+```bash
+PYTHON_BIN=/home/grads/miaozhhuo2/miniconda3/envs/clarev_env/bin/python
+ROOT_DIR=$(pwd)
+SPLIT_FILE=${ROOT_DIR}/exp_output/cmv_classification/shared_splits/emerson2017_vgene_kfold5_seed1_inner5_tvt.npz
+```
+
+Run ClareV (`3.0`):
+```bash
+${PYTHON_BIN} ${ROOT_DIR}/3.0.cmv_clarev_classification.py \
+  --bag-data-dir ${ROOT_DIR}/data/processed_data/Emerson2017_vgene \
+  --trained-model-dir ${ROOT_DIR}/trained_models/Emerson2017_vgene_weight \
+  --output-dir ${ROOT_DIR}/exp_output/cmv_classification/clarev_vgene_weight \
+  --split-file ${SPLIT_FILE} \
+  --inner-n-splits 5 \
+  --early-stopping-patience 5
+```
+
+Run baselines (`3.1`) with the same split:
+```bash
+${PYTHON_BIN} ${ROOT_DIR}/3.1.cmv_baseline_classification.py \
+  --bag-data-dir ${ROOT_DIR}/data/processed_data/Emerson2017_vgene \
+  --output-dir ${ROOT_DIR}/exp_output/cmv_classification/baseline_vgene_freq \
+  --split-file ${SPLIT_FILE} \
+  --inner-n-splits 5
+```
+
+If `--split-file` is omitted, scripts use default path and auto-create it if missing.
 
 ## Additional Notes
 For any issues or questions, please feel free to open an issue in this repository.
