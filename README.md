@@ -78,7 +78,7 @@ During the first run, ClareV will automatically download the pre-trained model f
 - **4.vgene_embedding_downstream_analysis.py**  
   This script performs downstream analyses on V gene embeddings, including the umap visualization of V gene embedding and constructing a phylogenetic tree.
 
-## Reproducible Commands (Final Default Protocol)
+## Reproducible Commands
 
 Protocol summary:
 - shared split file with `train/val/test` indices
@@ -86,29 +86,28 @@ Protocol summary:
 - early stopping patience `5`
 - report metrics on outer hold-out test folds
 
-```bash
-PYTHON_BIN=/home/grads/miaozhhuo2/miniconda3/envs/clarev_env/bin/python
-ROOT_DIR=$(pwd)
-SPLIT_FILE=${ROOT_DIR}/exp_output/cmv_classification/shared_splits/emerson2017_vgene_kfold5_seed1_inner5_tvt.npz
-```
+### Shared split file (`.npz`) guidance
+
+- Run `3.0` once with `--split-file exp_output/cmv_classification/shared_splits/emerson2017_vgene_kfold5_seed1_inner5_tvt.npz` to create the split file.
+- Reuse the same `--split-file` for `3.1` and all reruns.
 
 Run ClareV (`3.0`):
 ```bash
-${PYTHON_BIN} ${ROOT_DIR}/3.0.cmv_clarev_classification.py \
-  --bag-data-dir ${ROOT_DIR}/data/processed_data/Emerson2017_vgene \
-  --trained-model-dir ${ROOT_DIR}/trained_models/Emerson2017_vgene_weight \
-  --output-dir ${ROOT_DIR}/exp_output/cmv_classification/clarev_vgene_weight \
-  --split-file ${SPLIT_FILE} \
+python 3.0.cmv_clarev_classification.py \
+  --bag-data-dir data/processed_data/Emerson2017_vgene \
+  --trained-model-dir trained_models/Emerson2017_vgene_weight \
+  --output-dir exp_output/cmv_classification/clarev_vgene_weight \
+  --split-file exp_output/cmv_classification/shared_splits/emerson2017_vgene_kfold5_seed1_inner5_tvt.npz \
   --inner-n-splits 5 \
   --early-stopping-patience 5
 ```
 
 Run baselines (`3.1`) with the same split:
 ```bash
-${PYTHON_BIN} ${ROOT_DIR}/3.1.cmv_baseline_classification.py \
-  --bag-data-dir ${ROOT_DIR}/data/processed_data/Emerson2017_vgene \
-  --output-dir ${ROOT_DIR}/exp_output/cmv_classification/baseline_vgene_freq \
-  --split-file ${SPLIT_FILE} \
+python 3.1.cmv_baseline_classification.py \
+  --bag-data-dir data/processed_data/Emerson2017_vgene \
+  --output-dir exp_output/cmv_classification/baseline_vgene_freq \
+  --split-file exp_output/cmv_classification/shared_splits/emerson2017_vgene_kfold5_seed1_inner5_tvt.npz \
   --inner-n-splits 5
 ```
 
